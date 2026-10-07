@@ -67,7 +67,7 @@ end
 ---------------------------------------------------------------------------
 local BUYBACK_SLOTS = 12
 local sellingVisit
-local UpdateSellButton
+local UpdateSellButton, UpdateRestockButton
 
 local function ScanBags(sellJunk)
     local junk, listed = {}, {}
@@ -79,7 +79,8 @@ local function ScanBags(sellJunk)
                 local onList = db.sellListOn and db.sellList[info.itemID]
                 if isJunk or onList then
                     local price = select(11, C_Item.GetItemInfo(info.itemID)) or 0
-                    local entry = { bag = bag, slot = slot, itemID = info.itemID, value = price * info.stackCount }
+                    local entry = { bag = bag, slot = slot, itemID = info.itemID, count = info.stackCount,
+                        value = price * info.stackCount }
                     if isJunk then junk[#junk + 1] = entry else listed[#listed + 1] = entry end
                 end
             end
@@ -293,7 +294,7 @@ local function Decorate()
     UpdateOverlays()
 end
 
-local searchBox, sellButton
+local searchBox, sellButton, restockButton
 
 local function CreateVendorUI()
     for i = 1, MERCHANT_ITEMS_PER_PAGE do
@@ -328,7 +329,48 @@ local function CreateVendorUI()
     searchBox:SetScript("OnEnterPressed", EditBox_ClearFocus)
 
     sellButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
-    sellButton:SetSize(96, 20)
+    sellButton:SetSize(60, 20)
+    restockButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
+    restockButton:SetSize(64, 20)
+    restockButton:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
+    restockButton:SetText("Restock")
+    restockButton:Hide()
+    restockButton:SetScript("OnClick", function() Restock() end)
+    restockButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Restock")
+        GameTooltip:AddLine("Buys up to the amounts on your restock list:", 1, 1, 1, true)
+        for _, e in ipairs(self.items) do
+            GameTooltip:AddLine(Link(e.itemID) .. " x" .. e.buy)
+        end
+        GameTooltip:Show()
+    end)
+    restockButton:SetScript("OnLeave", GameTooltip_Hide)
+    restockButton.items = {}
+
+    -- The row left of the portrait only fits all three at full width, so the search box gives way.
+    local function LayoutButtons()
+        searchBox:SetWidth(restockButton:IsShown() and sellButton:IsShown() and 96 or 130)
+        sellButton:ClearAllPoints()
+        sellButton:SetPoint("RIGHT", restockButton:IsShown() and restockButton or searchBox, "LEFT", -8, 0)
+    end
+
+    -- Shown only while this vendor sells something on the restock list that you are short of.
+    UpdateRestockButton = function()
+        local items = {}
+        if merchantOpen and MerchantFrame.selectedTab ~= 2 and db.restockOn and next(db.restock) then
+            for i = 1, GetMerchantNumItems() do
+                local itemID = GetMerchantItemID(i)
+                local want = itemID and db.restock[itemID]
+                local have = want and C_Item.GetItemCount(itemID)
+                if have and have < want then items[#items + 1] = { itemID = itemID, buy = want - have } end
+            end
+        end
+        restockButton.items = items
+        restockButton:SetShown(#items > 0)
+        LayoutButtons()
+    end
+
     sellButton:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
     sellButton.left = 0
     sellButton:Hide()
@@ -336,8 +378,15 @@ local function CreateVendorUI()
     sellButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Sell list")
-        GameTooltip:AddLine(("%d stack%s left on your sell list. Each click sells up to %d, so everything fits in Buyback."):format(
-            self.left, self.left == 1 and "" or "s", BUYBACK_SLOTS), 1, 1, 1, true)
+        GameTooltip:AddLine(("Sells up to %d stacks, so everything fits in Buyback:"):format(BUYBACK_SLOTS), 1, 1, 1, true)
+        for i = 1, math.min(#self.listed, BUYBACK_SLOTS) do
+            local e = self.listed[i]
+            GameTooltip:AddLine(Link(e.itemID) .. (e.count > 1 and (" x" .. e.count) or ""))
+        end
+        local later = #self.listed - BUYBACK_SLOTS
+        if later > 0 then
+            GameTooltip:AddLine(("%d more stack%s after that"):format(later, later == 1 and "" or "s"), 0.5, 0.5, 0.5)
+        end
         GameTooltip:Show()
     end)
     sellButton:SetScript("OnLeave", GameTooltip_Hide)
@@ -349,7 +398,8 @@ local function CreateVendorUI()
         end
         local _, listed = ScanBags(false)
         sellButton.left = #listed
-        sellButton:SetText(("Sell %d more"):format(math.min(#listed, BUYBACK_SLOTS)))
+        sellButton.listed = listed
+        sellButton:SetText(("Sell %d"):format(math.min(#listed, BUYBACK_SLOTS)))
         sellButton:SetEnabled(sellingVisit ~= visit)
         sellButton:SetShown(#listed > 0)
     end
@@ -358,6 +408,7 @@ local function CreateVendorUI()
         local buyback = MerchantFrame.selectedTab == 2
         searchBox:SetShown(not buyback)
         sellButton:SetShown(not buyback and sellButton.left > 0)
+        UpdateRestockButton()
         if buyback then
             ShowAllSlots()
             ClearOverlays()
@@ -424,7 +475,7 @@ end
 ---------------------------------------------------------------------------
 -- Settings panel
 ---------------------------------------------------------------------------
-local settingsCategory
+local settingsCategory, sellListCategory, restockCategory
 
 local ROW_HEIGHT = 24
 
@@ -539,7 +590,165 @@ local function CreateSellListPanel(category)
     end
     panel:SetScript("OnShow", RefreshSellList)
 
-    Settings.RegisterCanvasLayoutSubcategory(category, panel, "Sell list")
+    sellListCategory = Settings.RegisterCanvasLayoutSubcategory(category, panel, "Sell list")
+end
+
+local RefreshRestockList
+
+local function SetRestock(itemID, amount)
+    if amount and amount > 0 then
+        db.restock[itemID] = amount
+        Print(("restock %s to %d"):format(Link(itemID), amount))
+    else
+        db.restock[itemID] = nil
+        Print(Link(itemID) .. " no longer restocked")
+    end
+    RefreshRestockList()
+    UpdateRestockButton()
+end
+
+local function CreateRestockPanel(category)
+    local panel = CreateFrame("Frame")
+    local title = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("Restock")
+    local help = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    help:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    help:SetPoint("RIGHT", -16, 0)
+    help:SetJustifyH("LEFT")
+    help:SetText("These items are bought back up to the amount set, at any vendor that sells them. To add one, "
+        .. "drag it onto the box, shift-click it into the box, or type its item ID, then set the amount.")
+
+    local box = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    box:SetSize(240, 20)
+    box:SetPoint("TOPLEFT", help, "BOTTOMLEFT", 6, -12)
+    box:SetAutoFocus(false)
+    local amountBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    amountBox:SetSize(50, 20)
+    amountBox:SetPoint("LEFT", box, "RIGHT", 12, 0)
+    amountBox:SetAutoFocus(false)
+    amountBox:SetNumeric(true)
+    amountBox:SetMaxLetters(4)
+    amountBox:SetText("20")
+    local addButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    addButton:SetSize(70, 22)
+    addButton:SetPoint("LEFT", amountBox, "RIGHT", 8, 0)
+    addButton:SetText("Add")
+
+    local function Add(itemID)
+        itemID = tonumber(itemID)
+        local amount = tonumber(amountBox:GetText())
+        if not (itemID and C_Item.GetItemInfoInstant(itemID)) then
+            Print("that isn't an item; drop, shift-click or type an item ID")
+        elseif not (amount and amount > 0) then
+            Print("set an amount above 0")
+            return
+        else
+            SetRestock(itemID, amount)
+        end
+        box:SetText("")
+        box:ClearFocus()
+        amountBox:ClearFocus()
+    end
+    local function AddFromBox()
+        local text = box:GetText()
+        Add(text:match("item:(%d+)") or text:match("^%s*(%d+)%s*$"))
+    end
+    local function AddFromCursor()
+        local kind, itemID = GetCursorInfo()
+        if kind == "item" then
+            ClearCursor()
+            Add(itemID)
+        end
+    end
+    box:SetScript("OnEnterPressed", AddFromBox)
+    amountBox:SetScript("OnEnterPressed", AddFromBox)
+    box:SetScript("OnReceiveDrag", AddFromCursor)
+    box:HookScript("OnMouseDown", AddFromCursor)
+    addButton:SetScript("OnClick", AddFromBox)
+    hooksecurefunc("ChatEdit_InsertLink", function(link)
+        if box:HasFocus() and link then box:SetText(link) end
+    end)
+
+    local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", box, "BOTTOMLEFT", -6, -16)
+    scroll:SetPoint("BOTTOMRIGHT", -32, 16)
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(1, 1)
+    scroll:SetScrollChild(content)
+    local empty = panel:CreateFontString(nil, "ARTWORK", "GameFontDisable")
+    empty:SetPoint("TOPLEFT", scroll, "TOPLEFT", 0, -4)
+    empty:SetText("Nothing is restocked yet.")
+
+    local rows = {}
+    local function Row(i)
+        if rows[i] then return rows[i] end
+        local row = CreateFrame("Button", nil, content)
+        row:SetHeight(ROW_HEIGHT - 2)
+        row:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_HEIGHT)
+        row:SetPoint("RIGHT", scroll, "RIGHT")
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(20, 20)
+        row.icon:SetPoint("LEFT")
+        row.remove = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        row.remove:SetSize(80, 20)
+        row.remove:SetPoint("RIGHT")
+        row.remove:SetText("Remove")
+        row.remove:SetScript("OnClick", function() SetRestock(row.itemID, nil) end)
+        -- Typing a new amount and pressing Enter or leaving the box saves it.
+        row.amount = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
+        row.amount:SetSize(50, 20)
+        row.amount:SetPoint("RIGHT", row.remove, "LEFT", -12, 0)
+        row.amount:SetAutoFocus(false)
+        row.amount:SetNumeric(true)
+        row.amount:SetMaxLetters(4)
+        local function Save(self)
+            local amount = tonumber(self:GetText())
+            if amount ~= db.restock[row.itemID] then SetRestock(row.itemID, amount) end
+            self:ClearFocus()
+        end
+        row.amount:SetScript("OnEnterPressed", Save)
+        row.amount:SetScript("OnEditFocusLost", function(self)
+            if db.restock[row.itemID] then Save(self) end
+        end)
+        row.text = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+        row.text:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+        row.text:SetPoint("RIGHT", row.amount, "LEFT", -8, 0)
+        row.text:SetJustifyH("LEFT")
+        row:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetItemByID(self.itemID)
+            GameTooltip:Show()
+        end)
+        row:SetScript("OnLeave", GameTooltip_Hide)
+        rows[i] = row
+        return row
+    end
+
+    RefreshRestockList = function()
+        if not panel:IsVisible() then return end
+        local entries = {}
+        for itemID, amount in pairs(db.restock) do
+            local name = C_Item.GetItemInfo(itemID)
+            if not name then Item:CreateFromItemID(itemID):ContinueOnItemLoad(RefreshRestockList) end
+            entries[#entries + 1] = { itemID = itemID, amount = amount, name = name or "" }
+        end
+        table.sort(entries, function(a, b) return a.name < b.name end)
+        content:SetSize(scroll:GetWidth(), math.max(1, #entries * ROW_HEIGHT))
+        for i, entry in ipairs(entries) do
+            local row = Row(i)
+            row.itemID = entry.itemID
+            row.icon:SetTexture(C_Item.GetItemIconByID(entry.itemID))
+            row.text:SetText(Link(entry.itemID))
+            row.amount:SetText(entry.amount)
+            row:Show()
+        end
+        for i = #entries + 1, #rows do rows[i]:Hide() end
+        empty:SetShown(#entries == 0)
+    end
+    panel:SetScript("OnShow", RefreshRestockList)
+
+    restockCategory = Settings.RegisterCanvasLayoutSubcategory(category, panel, "Restock")
 end
 
 local function RegisterSettings()
@@ -563,11 +772,12 @@ local function RegisterSettings()
     end)
     Settings.CreateSlider(category, limit, options, "Don't repair automatically when it costs more than this.")
     Checkbox("restockOn", "Restock",
-        "Buy items back up to the amount you set with /be restock when you open a vendor that sells them.")
+        "Show a Restock button at vendors that sell items on your restock list you are short of. Click it to buy them back up to the amount you set.")
     Checkbox("showCounts", "Show bag counts", "Show how many of each vendor item you carry.")
     Checkbox("showKnown", "Mark known items", "Mark recipes and items the vendor sells that you already know.")
     Checkbox("quiet", "Mute chat messages", "Don't print what was sold, repaired or restocked.")
     CreateSellListPanel(category)
+    CreateRestockPanel(category)
     Settings.RegisterAddOnCategory(category)
     settingsCategory = category
 end
@@ -588,24 +798,18 @@ SlashCmdList.BETTERERRANDS = function(msg)
     elseif cmd == "restock" and itemID then
         local amount = tonumber(rest:match("(%d+)%s*$"))
         if rest:match("item:") and amount == itemID then amount = nil end
-        if amount and amount > 0 then
-            db.restock[itemID] = amount
-            Print(("restock %s to %d"):format(Link(itemID), amount))
-        else
-            db.restock[itemID] = nil
-            Print(Link(itemID) .. " no longer restocked")
-        end
-    elseif cmd == "list" then
-        Print("sell list:")
-        for id in pairs(db.sellList) do print("  " .. Link(id)) end
-        Print("restock:")
-        for id, n in pairs(db.restock) do print(("  %s to %d"):format(Link(id), n)) end
+        SetRestock(itemID, amount)
+    elseif cmd == "sell" or cmd == "list" then
+        Settings.OpenToCategory(sellListCategory:GetID())
+    elseif cmd == "restock" then
+        Settings.OpenToCategory(restockCategory:GetID())
     else
         Print("commands:")
         print("  /be - open the settings")
         print("  /be sell <item> - add or remove an item on the sell list (or alt-click it in your bags at a vendor)")
         print("  /be restock <item> <amount> - keep that many in your bags; amount 0 stops")
-        print("  /be list - show the sell and restock lists")
+        print("  /be list - open the sell list page (also /be sell)")
+        print("  /be restock - open the restock page")
     end
 end
 
@@ -640,7 +844,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
             if not merchantOpen or visit ~= thisVisit then return end
             Repair()
             Sell()
-            Restock()
+            UpdateRestockButton()
         end)
     elseif event == "MERCHANT_CLOSED" then
         merchantOpen = false
@@ -648,8 +852,10 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         wipe(known)
         searchBox:SetText("")
         UpdateSellButton()
+        UpdateRestockButton()
     elseif event == "BAG_UPDATE_DELAYED" then
         UpdateOverlays()
         UpdateSellButton()
+        UpdateRestockButton()
     end
 end)

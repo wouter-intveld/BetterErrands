@@ -13,8 +13,8 @@ Every time you open a vendor:
 - Sells every grey item and prints what it got for them.
 - Sells the items on your sell list, so old food, drink and other leftovers go
   without you thinking about it.
-- Restocks: buys items back up to the amount you set, from any vendor that
-  sells them.
+- Shows a Restock button when the vendor sells items on your restock list that
+  you are short of. One click buys them back up to the amount you set.
 
 It waits half a second so that other vendor addons go first, then only does
 what they left. If Leatrix Plus is set to sell junk or to repair, BetterErrands
@@ -62,7 +62,8 @@ known marks, and chat messages.
 - `/be`: opens the settings
 - `/be sell <item>`: adds the item to the sell list, or removes it
 - `/be restock <item> <amount>`: keeps that many in your bags; 0 stops
-- `/be list`: shows the sell list and the restock amounts
+- `/be list` or `/be sell`: opens the sell list page
+- `/be restock`: opens the restock page
 
 ## Good to know
 
