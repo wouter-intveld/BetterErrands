@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: |cff33ff99Better|rErrands
+## Notes: Sells junk, repairs, restocks, and adds search to the vendor window.
+## Author: deface
+## Version: @project-version@
+## IconTexture: Interface\AddOns\BetterErrands\icon
+## SavedVariables: BetterErrandsDB
+## X-Curse-Project-ID: 1731717
+
+BetterErrands.lua

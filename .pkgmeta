@@ -1,0 +1,6 @@
+package-as: BetterErrands
+
+ignore:
+  - .luarc.json
+  - .github
+  - art

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#2a2433"/>
+      <stop offset="1" stop-color="#0d0b12"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/>
+      <stop offset="0.55" stop-color="#e0b04a"/>
+      <stop offset="1" stop-color="#9a6a22"/>
+    </linearGradient>
+    <linearGradient id="leather" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c98a4b"/>
+      <stop offset="0.6" stop-color="#8a5328"/>
+      <stop offset="1" stop-color="#4f2c12"/>
+    </linearGradient>
+    <linearGradient id="border" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f3d27a"/>
+      <stop offset="0.5" stop-color="#a8792a"/>
+      <stop offset="1" stop-color="#e8c066"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.65"/>
+    </filter>
+  </defs>
+
+  <!-- Background tile with gold border -->
+  <rect x="16" y="16" width="480" height="480" rx="72" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="72" fill="none" stroke="url(#border)" stroke-width="14"/>
+
+  <!-- Coin pouch -->
+  <g filter="url(#shadow)">
+    <path fill="url(#leather)" stroke="#2e1a0a" stroke-width="6"
+          d="M196 150 C150 190 104 250 104 320 C104 400 168 432 248 432 C328 432 392 400 392 320 C392 250 346 190 300 150 Z"/>
+    <path fill="url(#leather)" stroke="#2e1a0a" stroke-width="6"
+          d="M176 92 C200 112 220 120 248 120 C276 120 296 112 320 92 C326 120 314 146 300 156 L196 156 C182 146 170 120 176 92 Z"/>
+    <rect x="186" y="146" width="124" height="22" rx="10" fill="url(#gold)" stroke="#5a3d12" stroke-width="5"/>
+  </g>
+
+  <!-- Coin stack -->
+  <g filter="url(#shadow)" fill="url(#gold)" stroke="#5a3d12" stroke-width="6">
+    <ellipse cx="370" cy="420" rx="78" ry="24"/>
+    <ellipse cx="370" cy="394" rx="78" ry="24"/>
+    <ellipse cx="370" cy="368" rx="78" ry="24"/>
+  </g>
+  <ellipse cx="370" cy="368" rx="50" ry="13" fill="none" stroke="#9a6a22" stroke-width="5"/>
+</svg>

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.1",
+  "workspace.library": [
+    "~/.local/share/wow-api/Annotations/Core"
+  ],
+  "workspace.checkThirdParty": false,
+  "diagnostics.globals": [
+    "BetterErrandsDB",
+    "SLASH_BETTERERRANDS1",
+    "SLASH_BETTERERRANDS2",
+    "SlashCmdList",
+    "ITEM_SPELL_KNOWN",
+    "MERCHANT_ITEMS_PER_PAGE",
+    "MerchantFrame",
+    "MerchantFrame_Update",
+    "MinimalSliderWithSteppersMixin",
+    "TooltipDataProcessor",
+    "C_TooltipInfo",
+    "GameTooltip_Hide",
+    "NUM_BAG_SLOTS",
+    "Settings",
+    "EditBox_ClearFocus",
+    "MerchantFrame_UpdateAltCurrency",
+    "MerchantNextPageButton",
+    "MERCHANT_PAGE_NUMBER",
+    "MerchantPageText",
+    "MerchantPrevPageButton",
+    "MoneyFrame_Update",
+    "SetItemButtonCount",
+    "SetItemButtonNameFrameVertexColor",
+    "SetItemButtonSlotVertexColor",
+    "SetItemButtonStock",
+    "SetItemButtonTexture",
+    "SetItemButtonTextureVertexColor"
+  ]
+}
