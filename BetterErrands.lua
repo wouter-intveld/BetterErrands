@@ -66,41 +66,45 @@ end
 -- Selling: junk and the sell list, a few items per step so the server keeps up
 ---------------------------------------------------------------------------
 local BUYBACK_SLOTS = 12
-local function Sell()
-    local sellJunk = db.sellJunk and not HandledElsewhere("sellJunk", "selling junk")
-    local queue, listed = {}, {}
+local sellingVisit
+local UpdateSellButton
+
+local function ScanBags(sellJunk)
+    local junk, listed = {}, {}
     for bag = 0, NUM_BAG_SLOTS do
         for slot = 1, C_Container.GetContainerNumSlots(bag) do
             local info = C_Container.GetContainerItemInfo(bag, slot)
             if info and not info.isLocked and not info.hasNoValue then
-                local junk = sellJunk and info.quality == Enum.ItemQuality.Poor
+                local isJunk = sellJunk and info.quality == Enum.ItemQuality.Poor
                 local onList = db.sellListOn and db.sellList[info.itemID]
-                if junk or onList then
+                if isJunk or onList then
                     local price = select(11, C_Item.GetItemInfo(info.itemID)) or 0
                     local entry = { bag = bag, slot = slot, itemID = info.itemID, value = price * info.stackCount }
-                    if junk then queue[#queue + 1] = entry else listed[#listed + 1] = entry end
+                    if isJunk then junk[#junk + 1] = entry else listed[#listed + 1] = entry end
                 end
             end
         end
     end
-    -- Junk goes first and the sell list is capped at one Buyback's worth, so every
-    -- stack sold from the list can still be bought back after the visit.
-    for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
-    local kept = #listed - BUYBACK_SLOTS
-    if kept > 0 then
-        Print(("%d sell list stack%s kept for the next vendor, so everything sold fits in Buyback"):format(
-            kept, kept == 1 and "" or "s"))
+    return junk, listed
+end
+
+local function RunQueue(queue)
+    if #queue == 0 then
+        UpdateSellButton()
+        return
     end
-    if #queue == 0 then return end
     local thisVisit, pos, sold, total = visit, 1, 0, 0
+    sellingVisit = visit
     local function Step()
         if not merchantOpen or visit ~= thisVisit then return end
         for _ = 1, 8 do
             local q = queue[pos]
             if not q then
+                sellingVisit = nil
                 if sold > 0 then
                     Print(("sold %d item%s for %s"):format(sold, sold == 1 and "" or "s", GetMoneyString(total)))
                 end
+                UpdateSellButton()
                 return
             end
             pos = pos + 1
@@ -113,6 +117,26 @@ local function Sell()
         C_Timer.After(0.2, Step)
     end
     Step()
+end
+
+-- Junk goes first and the sell list is capped at one Buyback's worth, so every
+-- stack sold from the list can still be bought back after the visit.
+local function Sell()
+    local sellJunk = db.sellJunk and not HandledElsewhere("sellJunk", "selling junk")
+    local queue, listed = ScanBags(sellJunk)
+    for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
+    if #listed > BUYBACK_SLOTS then
+        Print(("selling %d of %d sell list stacks so they all fit in Buyback; the button in the vendor window sells the rest"):format(
+            BUYBACK_SLOTS, #listed))
+    end
+    RunQueue(queue)
+end
+
+local function SellNextBatch()
+    local _, listed = ScanBags(false)
+    local queue = {}
+    for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
+    RunQueue(queue)
 end
 
 ---------------------------------------------------------------------------
@@ -269,7 +293,7 @@ local function Decorate()
     UpdateOverlays()
 end
 
-local searchBox
+local searchBox, sellButton
 
 local function CreateVendorUI()
     for i = 1, MERCHANT_ITEMS_PER_PAGE do
@@ -303,9 +327,37 @@ local function CreateVendorUI()
     end)
     searchBox:SetScript("OnEnterPressed", EditBox_ClearFocus)
 
+    sellButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
+    sellButton:SetSize(96, 20)
+    sellButton:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
+    sellButton.left = 0
+    sellButton:Hide()
+    sellButton:SetScript("OnClick", function() SellNextBatch() end)
+    sellButton:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Sell list")
+        GameTooltip:AddLine(("%d stack%s left on your sell list. Each click sells up to %d, so everything fits in Buyback."):format(
+            self.left, self.left == 1 and "" or "s", BUYBACK_SLOTS), 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    sellButton:SetScript("OnLeave", GameTooltip_Hide)
+
+    UpdateSellButton = function()
+        if not merchantOpen or MerchantFrame.selectedTab == 2 then
+            sellButton:Hide()
+            return
+        end
+        local _, listed = ScanBags(false)
+        sellButton.left = #listed
+        sellButton:SetText(("Sell %d more"):format(math.min(#listed, BUYBACK_SLOTS)))
+        sellButton:SetEnabled(sellingVisit ~= visit)
+        sellButton:SetShown(#listed > 0)
+    end
+
     hooksecurefunc("MerchantFrame_Update", function()
         local buyback = MerchantFrame.selectedTab == 2
         searchBox:SetShown(not buyback)
+        sellButton:SetShown(not buyback and sellButton.left > 0)
         if buyback then
             ShowAllSlots()
             ClearOverlays()
@@ -323,6 +375,7 @@ local function SetSell(itemID, on)
     db.sellList[itemID] = on or nil
     Print(Link(itemID) .. (on and " added to" or " removed from") .. " the sell list")
     RefreshSellList()
+    UpdateSellButton()
 end
 
 local function ToggleSell(itemID)
@@ -594,7 +647,9 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         frame:UnregisterEvent("BAG_UPDATE_DELAYED")
         wipe(known)
         searchBox:SetText("")
+        UpdateSellButton()
     elseif event == "BAG_UPDATE_DELAYED" then
         UpdateOverlays()
+        UpdateSellButton()
     end
 end)
