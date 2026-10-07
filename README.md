@@ -23,8 +23,8 @@ leaves that to it and says so once.
 ## Vendor window
 
 - A search box at the top. Items that don't match are hidden, matches from
-  every page are collected on one, and the page counter counts matches. Clear
-  the box to get the normal pages back.
+  every page are collected into their own pages, and the page counter counts
+  matches. Clear the box to get the normal pages back.
 - Each item shows how many you already carry, in its top-right corner.
 - Recipes, mounts and pets you already know are marked "known".
 
@@ -43,13 +43,18 @@ Three ways to add an item:
 Items on the list are sold at every vendor, after the junk and at most 12
 stacks at a time. That is what the vendor's Buyback tab holds, so if something
 went that shouldn't have, you can always buy it back right there. When more
-stacks are waiting, a button in the vendor window sells the next 12.
+stacks are waiting, a button in the vendor window sells the next 12; each
+batch replaces the previous one in Buyback, so check it first.
 
 ## Restock
 
-`/be restock <item> 20` keeps 20 of that item in your bags. Shift-click the
-item into the chat line for `<item>`. An amount of 0 stops restocking it, and
-the item's tooltip shows its restock amount.
+The Restock page in the settings (Options > AddOns > BetterErrands > Restock)
+lists what you restock: drag an item onto the box, shift-click it into the
+box, or type its item ID, set the amount, and change it later in the list.
+`/be restock <item> 20` does the same from chat; shift-click the item into the
+chat line for `<item>`, and an amount of 0 stops restocking it. The item's
+tooltip shows its restock amount. Items sold in bundles are bought by the
+bundle, so you can end up with a little more than the amount.
 
 ## Settings
 

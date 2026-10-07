@@ -13,6 +13,8 @@ local DEFAULTS = {
 
 local db
 local merchantOpen, visit = false, 0
+-- Per-visit markers, compared with `visit` so a closed and reopened vendor starts clean.
+local choresVisit, sellingVisit, restockPendingVisit
 
 local function Print(msg)
     if not db.quiet then
@@ -66,8 +68,7 @@ end
 -- Selling: junk and the sell list, a few items per step so the server keeps up
 ---------------------------------------------------------------------------
 local BUYBACK_SLOTS = 12
-local sellingVisit
-local UpdateSellButton, UpdateRestockButton
+local UpdateButtons
 
 local function ScanBags(sellJunk)
     local junk, listed = {}, {}
@@ -86,14 +87,11 @@ local function ScanBags(sellJunk)
             end
         end
     end
-    return junk, listed
+    return listed, junk
 end
 
 local function RunQueue(queue)
-    if #queue == 0 then
-        UpdateSellButton()
-        return
-    end
+    if sellingVisit == visit or #queue == 0 then return end
     local thisVisit, pos, sold, total = visit, 1, 0, 0
     sellingVisit = visit
     local function Step()
@@ -105,7 +103,7 @@ local function RunQueue(queue)
                 if sold > 0 then
                     Print(("sold %d item%s for %s"):format(sold, sold == 1 and "" or "s", GetMoneyString(total)))
                 end
-                UpdateSellButton()
+                UpdateButtons()
                 return
             end
             pos = pos + 1
@@ -118,13 +116,15 @@ local function RunQueue(queue)
         C_Timer.After(0.2, Step)
     end
     Step()
+    -- Greys the Sell button before a second click can start another queue.
+    if sellingVisit then UpdateButtons() end
 end
 
 -- Junk goes first and the sell list is capped at one Buyback's worth, so every
 -- stack sold from the list can still be bought back after the visit.
 local function Sell()
     local sellJunk = db.sellJunk and not HandledElsewhere("sellJunk", "selling junk")
-    local queue, listed = ScanBags(sellJunk)
+    local listed, queue = ScanBags(sellJunk)
     for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
     if #listed > BUYBACK_SLOTS then
         Print(("selling %d of %d sell list stacks so they all fit in Buyback; the button in the vendor window sells the rest"):format(
@@ -134,7 +134,7 @@ local function Sell()
 end
 
 local function SellNextBatch()
-    local _, listed = ScanBags(false)
+    local listed = ScanBags(false)
     local queue = {}
     for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
     RunQueue(queue)
@@ -143,9 +143,11 @@ end
 ---------------------------------------------------------------------------
 -- Restock: buy up to the amount set per item
 ---------------------------------------------------------------------------
--- Purchases are confirmed by the server later, so money and counts are tracked here, not re-read.
+-- Purchases are confirmed by the server later, so money and counts are tracked here, not re-read,
+-- and the Restock button stays greyed until the bags report back.
 local function Restock()
     if not db.restockOn or not next(db.restock) then return end
+    restockPendingVisit = visit
     local money = GetMoney()
     for i = 1, GetMerchantNumItems() do
         local itemID = GetMerchantItemID(i)
@@ -153,25 +155,26 @@ local function Restock()
         if want then
             local need = want - C_Item.GetItemCount(itemID)
             local info = C_MerchantFrame.GetItemInfo(i)
-            local price, batch, available = info.price, info.stackCount, info.numAvailable
+            local price, bundle, available = info.price, info.stackCount, info.numAvailable
             local maxStack = math.max(1, GetMerchantItemMaxStack(i) or 1)
             local bought = 0
             while need > 0 and available ~= 0 do
-                local n = batch > 1 and batch or math.min(need, maxStack)
-                local cost = batch > 1 and price or price * n
+                local n = bundle > 1 and bundle or math.min(need, maxStack, available > 0 and available or need)
+                local cost = bundle > 1 and price or price * n
                 if money < cost then
                     Print("not enough money to restock " .. Link(itemID))
                     break
                 end
-                if batch > 1 then BuyMerchantItem(i) else BuyMerchantItem(i, n) end
+                if bundle > 1 then BuyMerchantItem(i) else BuyMerchantItem(i, n) end
                 money, need, bought = money - cost, need - n, bought + n
-                if available > 0 then available = available - 1 end
+                if available > 0 then available = available - (bundle > 1 and 1 or n) end
             end
             if bought > 0 then
                 Print(("restocked %d x %s"):format(bought, Link(itemID)))
             end
         end
     end
+    UpdateButtons()
 end
 
 ---------------------------------------------------------------------------
@@ -183,14 +186,13 @@ local slots = {}
 -- Only recipes, mounts and pets can be "Already known", so nothing else gets a tooltip scan,
 -- and a known item stays known for the rest of the visit.
 local SCANNABLE = { [Enum.ItemClass.Recipe] = true, [Enum.ItemClass.Miscellaneous] = true }
-local GetMerchantItemTooltip = C_TooltipInfo and C_TooltipInfo.GetMerchantItem
 local known = {}
 
 local function IsKnown(index, itemID)
     if known[itemID] then return true end
     local classID = select(6, C_Item.GetItemInfoInstant(itemID))
-    if not (SCANNABLE[classID] and GetMerchantItemTooltip) then return false end
-    local data = GetMerchantItemTooltip(index)
+    if not SCANNABLE[classID] then return false end
+    local data = C_TooltipInfo.GetMerchantItem(index)
     for _, line in ipairs(data and data.lines or {}) do
         if line.leftText == ITEM_SPELL_KNOWN then
             known[itemID] = true
@@ -278,7 +280,7 @@ local function UpdateOverlays()
     local numItems = GetMerchantNumItems()
     for _, s in ipairs(slots) do
         local index = s.button:GetID()
-        local itemID = s.frame:IsShown() and index > 0 and index <= numItems and GetMerchantItemID(index)
+        local itemID = s.button:IsVisible() and index > 0 and index <= numItems and GetMerchantItemID(index)
         local count = itemID and db.showCounts and C_Item.GetItemCount(itemID) or 0
         s.count:SetText(count > 0 and count or "")
         s.known:SetShown(itemID and db.showKnown and IsKnown(index, itemID) or false)
@@ -326,16 +328,15 @@ local function CreateVendorUI()
         MerchantFrame.page = 1
         if MerchantFrame:IsShown() then MerchantFrame_Update() end
     end)
-    searchBox:SetScript("OnEnterPressed", EditBox_ClearFocus)
+    searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
-    sellButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
-    sellButton:SetSize(60, 20)
     restockButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
     restockButton:SetSize(64, 20)
     restockButton:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
     restockButton:SetText("Restock")
+    restockButton.items = {}
     restockButton:Hide()
-    restockButton:SetScript("OnClick", function() Restock() end)
+    restockButton:SetScript("OnClick", Restock)
     restockButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Restock")
@@ -346,35 +347,13 @@ local function CreateVendorUI()
         GameTooltip:Show()
     end)
     restockButton:SetScript("OnLeave", GameTooltip_Hide)
-    restockButton.items = {}
 
-    -- The row left of the portrait only fits all three at full width, so the search box gives way.
-    local function LayoutButtons()
-        searchBox:SetWidth(restockButton:IsShown() and sellButton:IsShown() and 96 or 130)
-        sellButton:ClearAllPoints()
-        sellButton:SetPoint("RIGHT", restockButton:IsShown() and restockButton or searchBox, "LEFT", -8, 0)
-    end
-
-    -- Shown only while this vendor sells something on the restock list that you are short of.
-    UpdateRestockButton = function()
-        local items = {}
-        if merchantOpen and MerchantFrame.selectedTab ~= 2 and db.restockOn and next(db.restock) then
-            for i = 1, GetMerchantNumItems() do
-                local itemID = GetMerchantItemID(i)
-                local want = itemID and db.restock[itemID]
-                local have = want and C_Item.GetItemCount(itemID)
-                if have and have < want then items[#items + 1] = { itemID = itemID, buy = want - have } end
-            end
-        end
-        restockButton.items = items
-        restockButton:SetShown(#items > 0)
-        LayoutButtons()
-    end
-
+    sellButton = CreateFrame("Button", nil, MerchantFrame, "UIPanelButtonTemplate")
+    sellButton:SetSize(60, 20)
     sellButton:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
-    sellButton.left = 0
+    sellButton.listed = {}
     sellButton:Hide()
-    sellButton:SetScript("OnClick", function() SellNextBatch() end)
+    sellButton:SetScript("OnClick", SellNextBatch)
     sellButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:AddLine("Sell list")
@@ -391,24 +370,46 @@ local function CreateVendorUI()
     end)
     sellButton:SetScript("OnLeave", GameTooltip_Hide)
 
-    UpdateSellButton = function()
-        if not merchantOpen or MerchantFrame.selectedTab == 2 then
-            sellButton:Hide()
-            return
-        end
-        local _, listed = ScanBags(false)
-        sellButton.left = #listed
+    -- Sell shows once the opening chores ran, Restock only for shortages this vendor can fill, and
+    -- both grey out until the bags report back. The row left of the portrait only fits all three
+    -- at full width, so the search box gives way.
+    UpdateButtons = function()
+        local onTab = merchantOpen and MerchantFrame.selectedTab ~= 2
+        local listed = onTab and choresVisit == visit and ScanBags(false) or {}
         sellButton.listed = listed
         sellButton:SetText(("Sell %d"):format(math.min(#listed, BUYBACK_SLOTS)))
         sellButton:SetEnabled(sellingVisit ~= visit)
         sellButton:SetShown(#listed > 0)
+
+        local items = {}
+        if onTab and db.restockOn and next(db.restock) then
+            for i = 1, GetMerchantNumItems() do
+                local itemID = GetMerchantItemID(i)
+                local want = itemID and db.restock[itemID]
+                local have = want and C_Item.GetItemCount(itemID)
+                if have and have < want then
+                    local info = C_MerchantFrame.GetItemInfo(i)
+                    if info.numAvailable ~= 0 then
+                        local buy = want - have
+                        if info.stackCount > 1 then buy = math.ceil(buy / info.stackCount) * info.stackCount end
+                        items[#items + 1] = { itemID = itemID, buy = buy }
+                    end
+                end
+            end
+        end
+        restockButton.items = items
+        restockButton:SetEnabled(restockPendingVisit ~= visit)
+        restockButton:SetShown(#items > 0)
+
+        searchBox:SetWidth(restockButton:IsShown() and sellButton:IsShown() and 96 or 130)
+        sellButton:ClearAllPoints()
+        sellButton:SetPoint("RIGHT", restockButton:IsShown() and restockButton or searchBox, "LEFT", -8, 0)
     end
 
     hooksecurefunc("MerchantFrame_Update", function()
         local buyback = MerchantFrame.selectedTab == 2
         searchBox:SetShown(not buyback)
-        sellButton:SetShown(not buyback and sellButton.left > 0)
-        UpdateRestockButton()
+        UpdateButtons()
         if buyback then
             ShowAllSlots()
             ClearOverlays()
@@ -426,15 +427,18 @@ local function SetSell(itemID, on)
     db.sellList[itemID] = on or nil
     Print(Link(itemID) .. (on and " added to" or " removed from") .. " the sell list")
     RefreshSellList()
-    UpdateSellButton()
+    UpdateButtons()
 end
 
 local function ToggleSell(itemID)
     SetSell(itemID, not db.sellList[itemID])
 end
 
-hooksecurefunc("HandleModifiedItemClick", function(link)
+-- Blizzard routes alt-clicks on vendor, Buyback and equipped items through here too; only
+-- bag clicks carry a bag-and-slot location.
+hooksecurefunc("HandleModifiedItemClick", function(link, itemLocation)
     if not (merchantOpen and IsAltKeyDown() and not IsShiftKeyDown() and not IsControlKeyDown()) then return end
+    if not (itemLocation and itemLocation:IsBagAndSlot()) then return end
     local itemID = link and tonumber(link:match("item:(%d+)"))
     if itemID then ToggleSell(itemID) end
 end)
@@ -461,16 +465,9 @@ local function AddTooltipLines(tooltip, itemID)
     end
 end
 
-if TooltipDataProcessor then
-    TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
-        AddTooltipLines(tooltip, data and data.id)
-    end)
-else
-    GameTooltip:HookScript("OnTooltipSetItem", function(tooltip)
-        local _, link = tooltip:GetItem()
-        AddTooltipLines(tooltip, link and tonumber(link:match("item:(%d+)")))
-    end)
-end
+TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
+    AddTooltipLines(tooltip, data and data.id)
+end)
 
 ---------------------------------------------------------------------------
 -- Settings panel
@@ -604,7 +601,7 @@ local function SetRestock(itemID, amount)
         Print(Link(itemID) .. " no longer restocked")
     end
     RefreshRestockList()
-    UpdateRestockButton()
+    UpdateButtons()
 end
 
 local function CreateRestockPanel(category)
@@ -755,7 +752,13 @@ local function RegisterSettings()
     local category = Settings.RegisterVerticalLayoutCategory("|cff33ff99Better|rErrands")
     local function Checkbox(key, name, tooltip)
         local setting = Settings.RegisterProxySetting(category, "BE_" .. key, Settings.VarType.Boolean, name,
-            DEFAULTS[key], function() return db[key] end, function(value) db[key] = value end)
+            DEFAULTS[key], function() return db[key] end, function(value)
+                db[key] = value
+                if merchantOpen then
+                    UpdateOverlays()
+                    UpdateButtons()
+                end
+            end)
         Settings.CreateCheckbox(category, setting, tooltip)
     end
     Checkbox("sellJunk", "Sell junk",
@@ -791,14 +794,16 @@ SlashCmdList.BETTERERRANDS = function(msg)
     local cmd, rest = (msg or ""):match("^(%S*)%s*(.-)$")
     cmd = cmd:lower()
     local itemID = tonumber(rest:match("item:(%d+)") or rest:match("^(%d+)"))
+    if itemID and not C_Item.GetItemInfoInstant(itemID) then
+        Print("that isn't an item; shift-click one into the command")
+        return
+    end
     if cmd == "" or cmd == "options" then
         Settings.OpenToCategory(settingsCategory:GetID())
     elseif cmd == "sell" and itemID then
         ToggleSell(itemID)
     elseif cmd == "restock" and itemID then
-        local amount = tonumber(rest:match("(%d+)%s*$"))
-        if rest:match("item:") and amount == itemID then amount = nil end
-        SetRestock(itemID, amount)
+        SetRestock(itemID, tonumber(rest:match("%s(%d+)%s*$")))
     elseif cmd == "sell" or cmd == "list" then
         Settings.OpenToCategory(sellListCategory:GetID())
     elseif cmd == "restock" then
@@ -842,20 +847,20 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         -- pick up what they left, since repair skips a zero cost and selling skips sold items.
         C_Timer.After(0.5, function()
             if not merchantOpen or visit ~= thisVisit then return end
+            choresVisit = visit
             Repair()
             Sell()
-            UpdateRestockButton()
+            UpdateButtons()
         end)
     elseif event == "MERCHANT_CLOSED" then
         merchantOpen = false
         frame:UnregisterEvent("BAG_UPDATE_DELAYED")
         wipe(known)
         searchBox:SetText("")
-        UpdateSellButton()
-        UpdateRestockButton()
+        UpdateButtons()
     elseif event == "BAG_UPDATE_DELAYED" then
+        restockPendingVisit = nil
         UpdateOverlays()
-        UpdateSellButton()
-        UpdateRestockButton()
+        UpdateButtons()
     end
 end)
