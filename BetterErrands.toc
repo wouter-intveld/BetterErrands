@@ -1,5 +1,6 @@
 ## Interface: 16001
 ## Title: |cff33ff99Better|rErrands
+## Category: Inventory
 ## Notes: Sells junk, repairs, restocks, and adds search to the vendor window.
 ## Author: deface
 ## Version: @project-version@
