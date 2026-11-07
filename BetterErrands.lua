@@ -1,5 +1,5 @@
 local ADDON = ...
-local TITLE = "|cff33ff99Better|rErrands"
+local TITLE = "|cffcda552Better|rErrands"
 
 local DEFAULTS = {
     sellJunk = true,     -- sell grey items at every vendor
