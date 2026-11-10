@@ -18,9 +18,13 @@ local merchantOpen, visit = false, 0
 local choresVisit, sellingVisit, restockPendingVisit
 
 local function Print(msg)
-    if not db.quiet then
-        print(TITLE .. ": " .. msg)
-    end
+    print(TITLE .. ": " .. msg)
+end
+
+-- What the vendor chores did; "Mute chat messages" turns these off. Answers to
+-- something the player did (a click, a command, a setting) stay on.
+local function Notify(msg)
+    if not db.quiet then Print(msg) end
 end
 
 -- Features another addon already does, so we don't do them twice. Told once per session.
@@ -36,7 +40,7 @@ local function HandledElsewhere(feature, what)
     if not (vars and vars[other.key] == "On") then return false end
     if not told[feature] then
         told[feature] = true
-        Print(other.title .. " is " .. what .. ", so BetterErrands won't")
+        Notify(other.title .. " is " .. what .. ", so BetterErrands won't")
     end
     return true
 end
@@ -54,15 +58,15 @@ local function Repair()
     local cost, canRepair = GetRepairAllCost()
     if not canRepair or cost == 0 then return end
     if db.repairLimit > 0 and cost > db.repairLimit * 10000 then
-        Print("repair costs " .. GetMoneyString(cost) .. ", above your limit; not repaired")
+        Notify("repair costs " .. GetMoneyString(cost) .. ", above your limit; not repaired")
         return
     end
     if GetMoney() < cost then
-        Print("not enough money to repair (" .. GetMoneyString(cost) .. ")")
+        Notify("not enough money to repair (" .. GetMoneyString(cost) .. ")")
         return
     end
     RepairAllItems()
-    Print("repaired for " .. GetMoneyString(cost))
+    Notify("repaired for " .. GetMoneyString(cost))
 end
 
 ---------------------------------------------------------------------------
@@ -102,7 +106,7 @@ local function RunQueue(queue)
             if not q then
                 sellingVisit = nil
                 if sold > 0 then
-                    Print(("sold %d item%s for %s"):format(sold, sold == 1 and "" or "s", GetMoneyString(total)))
+                    Notify(("sold %d item%s for %s"):format(sold, sold == 1 and "" or "s", GetMoneyString(total)))
                 end
                 UpdateButtons()
                 return
@@ -128,7 +132,7 @@ local function Sell()
     local listed, queue = ScanBags(sellJunk)
     for i = 1, math.min(#listed, BUYBACK_SLOTS) do queue[#queue + 1] = listed[i] end
     if #listed > BUYBACK_SLOTS then
-        Print(("selling %d of %d sell list stacks so they all fit in Buyback; the button in the vendor window sells the rest"):format(
+        Notify(("selling %d of %d sell list stacks so they all fit in Buyback; the button in the vendor window sells the rest"):format(
             BUYBACK_SLOTS, #listed))
     end
     RunQueue(queue)
@@ -171,7 +175,7 @@ local function Restock()
                 if available > 0 then available = available - (bundle > 1 and 1 or n) end
             end
             if bought > 0 then
-                Print(("restocked %d x %s"):format(bought, Link(itemID)))
+                Notify(("restocked %d x %s"):format(bought, Link(itemID)))
             end
         end
     end
@@ -184,22 +188,26 @@ end
 local search = ""
 local slots = {}
 
--- Only recipes, mounts and pets can be "Already known", so nothing else gets a tooltip scan,
--- and a known item stays known for the rest of the visit.
+-- Only recipes, mounts and pets can be "Already known", so nothing else gets a tooltip scan.
+-- A known item stays known for the rest of the visit; an unknown one is scanned again once
+-- the bags change (learning it takes the recipe out of them) and at the next vendor.
 local SCANNABLE = { [Enum.ItemClass.Recipe] = true, [Enum.ItemClass.Miscellaneous] = true }
-local known = {}
+local known, unknown = {}, {}
 
 local function IsKnown(index, itemID)
     if known[itemID] then return true end
+    if unknown[itemID] then return false end
     local classID = select(6, C_Item.GetItemInfoInstant(itemID))
-    if not SCANNABLE[classID] then return false end
-    local data = C_TooltipInfo.GetMerchantItem(index)
-    for _, line in ipairs(data and data.lines or {}) do
-        if line.leftText == ITEM_SPELL_KNOWN then
-            known[itemID] = true
-            return true
+    if SCANNABLE[classID] then
+        local data = C_TooltipInfo.GetMerchantItem(index)
+        for _, line in ipairs(data and data.lines or {}) do
+            if line.leftText == ITEM_SPELL_KNOWN then
+                known[itemID] = true
+                return true
+            end
         end
     end
+    unknown[itemID] = true
     return false
 end
 
@@ -208,6 +216,9 @@ local function Matches(index)
     local name = info and info.name
     return name and name:lower():find(search, 1, true) ~= nil
 end
+
+-- The search's matches, kept until the text, the vendor or its stock list changes.
+local matches, matchesKey = {}, nil
 
 -- Puts vendor item `index` in slot `slot`, the way Blizzard's MerchantFrame_UpdateMerchantInfo does.
 -- Buying, tooltips and links read the button's ID, so they follow the item.
@@ -249,9 +260,13 @@ end
 
 -- While searching, the slots show only matches from every page, and the pager counts matches.
 local function ShowMatches()
-    local matches = {}
-    for index = 1, GetMerchantNumItems() do
-        if Matches(index) then matches[#matches + 1] = index end
+    local key = search .. "|" .. visit .. "|" .. GetMerchantNumItems()
+    if key ~= matchesKey then
+        matchesKey = key
+        wipe(matches)
+        for index = 1, GetMerchantNumItems() do
+            if Matches(index) then matches[#matches + 1] = index end
+        end
     end
     local pages = math.max(1, math.ceil(#matches / MERCHANT_ITEMS_PER_PAGE))
     MerchantFrame.page = math.min(MerchantFrame.page, pages)
@@ -298,6 +313,55 @@ local function Decorate()
 end
 
 local searchBox, sellButton, restockButton
+
+-- Sell shows once the opening chores ran, Restock only for shortages this vendor can fill, and
+-- both grey out until the bags report back. The row left of the portrait only fits all three
+-- at full width, so the search box gives way.
+function UpdateButtons()
+    local onTab = merchantOpen and MerchantFrame.selectedTab ~= 2
+    local listed = onTab and choresVisit == visit and ScanBags(false) or {}
+    sellButton.listed = listed
+    sellButton:SetText(("Sell %d"):format(math.min(#listed, BUYBACK_SLOTS)))
+    sellButton:SetEnabled(sellingVisit ~= visit)
+    sellButton:SetShown(#listed > 0)
+
+    local items = {}
+    if onTab and db.restockOn and next(db.restock) then
+        for i = 1, GetMerchantNumItems() do
+            local itemID = GetMerchantItemID(i)
+            local want = itemID and db.restock[itemID]
+            local have = want and C_Item.GetItemCount(itemID)
+            if have and have < want then
+                local info = C_MerchantFrame.GetItemInfo(i)
+                if info.numAvailable ~= 0 then
+                    local buy = want - have
+                    if info.stackCount > 1 then buy = math.ceil(buy / info.stackCount) * info.stackCount end
+                    items[#items + 1] = { itemID = itemID, buy = buy }
+                end
+            end
+        end
+    end
+    restockButton.items = items
+    restockButton:SetEnabled(restockPendingVisit ~= visit)
+    restockButton:SetShown(#items > 0)
+
+    searchBox:SetWidth(restockButton:IsShown() and sellButton:IsShown() and 96 or 130)
+    sellButton:ClearAllPoints()
+    sellButton:SetPoint("RIGHT", restockButton:IsShown() and restockButton or searchBox, "LEFT", -8, 0)
+end
+
+-- Blizzard refreshes the vendor window several times in a frame (page, tab, bag and
+-- merchant events); the buttons, which scan the bags, follow once, the next frame.
+local buttonsPending = false
+local function RunButtons()
+    buttonsPending = false
+    UpdateButtons()
+end
+local function RequestButtons()
+    if buttonsPending then return end
+    buttonsPending = true
+    C_Timer.After(0, RunButtons)
+end
 
 local function CreateVendorUI()
     for i = 1, MERCHANT_ITEMS_PER_PAGE do
@@ -371,46 +435,10 @@ local function CreateVendorUI()
     end)
     sellButton:SetScript("OnLeave", GameTooltip_Hide)
 
-    -- Sell shows once the opening chores ran, Restock only for shortages this vendor can fill, and
-    -- both grey out until the bags report back. The row left of the portrait only fits all three
-    -- at full width, so the search box gives way.
-    UpdateButtons = function()
-        local onTab = merchantOpen and MerchantFrame.selectedTab ~= 2
-        local listed = onTab and choresVisit == visit and ScanBags(false) or {}
-        sellButton.listed = listed
-        sellButton:SetText(("Sell %d"):format(math.min(#listed, BUYBACK_SLOTS)))
-        sellButton:SetEnabled(sellingVisit ~= visit)
-        sellButton:SetShown(#listed > 0)
-
-        local items = {}
-        if onTab and db.restockOn and next(db.restock) then
-            for i = 1, GetMerchantNumItems() do
-                local itemID = GetMerchantItemID(i)
-                local want = itemID and db.restock[itemID]
-                local have = want and C_Item.GetItemCount(itemID)
-                if have and have < want then
-                    local info = C_MerchantFrame.GetItemInfo(i)
-                    if info.numAvailable ~= 0 then
-                        local buy = want - have
-                        if info.stackCount > 1 then buy = math.ceil(buy / info.stackCount) * info.stackCount end
-                        items[#items + 1] = { itemID = itemID, buy = buy }
-                    end
-                end
-            end
-        end
-        restockButton.items = items
-        restockButton:SetEnabled(restockPendingVisit ~= visit)
-        restockButton:SetShown(#items > 0)
-
-        searchBox:SetWidth(restockButton:IsShown() and sellButton:IsShown() and 96 or 130)
-        sellButton:ClearAllPoints()
-        sellButton:SetPoint("RIGHT", restockButton:IsShown() and restockButton or searchBox, "LEFT", -8, 0)
-    end
-
     hooksecurefunc("MerchantFrame_Update", function()
         local buyback = MerchantFrame.selectedTab == 2
         searchBox:SetShown(not buyback)
-        UpdateButtons()
+        RequestButtons()
         if buyback then
             ShowAllSlots()
             ClearOverlays()
@@ -453,8 +481,8 @@ local function AddTooltipLines(tooltip, itemID)
     if merchantOpen then
         local owner = tooltip:GetOwner()
         local ownerName = owner and owner:GetName() or ""
-        local sellPrice = select(11, C_Item.GetItemInfo(itemID)) or 0
-        hint = not ownerName:find("^Merchant") and sellPrice > 0 and C_Item.GetItemCount(itemID) > 0
+        hint = not ownerName:find("^Merchant") and (select(11, C_Item.GetItemInfo(itemID)) or 0) > 0
+            and C_Item.GetItemCount(itemID) > 0
     end
     if listed then
         tooltip:AddLine(TITLE .. ": on sell list" .. (hint and " (alt-click to remove)" or ""))
@@ -476,6 +504,15 @@ end)
 local settingsCategory, sellListCategory, restockCategory
 
 local ROW_HEIGHT = 24
+
+-- Shift-clicking an item while one of the add boxes has focus puts its link there.
+local linkBoxes = {}
+hooksecurefunc("ChatEdit_InsertLink", function(link)
+    if not link then return end
+    for _, box in ipairs(linkBoxes) do
+        if box:HasFocus() then box:SetText(link) end
+    end
+end)
 
 -- One builder for both list pages; opts.amounts adds the amount box and the editable column.
 local function CreateItemListPanel(category, opts)
@@ -539,9 +576,7 @@ local function CreateItemListPanel(category, opts)
     box:SetScript("OnReceiveDrag", AddFromCursor)
     box:HookScript("OnMouseDown", AddFromCursor)
     addButton:SetScript("OnClick", AddFromBox)
-    hooksecurefunc("ChatEdit_InsertLink", function(link)
-        if box:HasFocus() and link then box:SetText(link) end
-    end)
+    linkBoxes[#linkBoxes + 1] = box
 
     local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", box, "BOTTOMLEFT", -6, -16)
@@ -600,6 +635,7 @@ local function CreateItemListPanel(category, opts)
         return row
     end
 
+    local requested = {} -- itemIDs whose name is on its way; Refresh runs again as it arrives
     local function Refresh()
         if not panel:IsVisible() then return end
         -- Text set before the page was first shown can sit scrolled out of view, so it is
@@ -612,7 +648,10 @@ local function CreateItemListPanel(category, opts)
         local entries = {}
         for itemID, amount in pairs(opts.list) do
             local name = C_Item.GetItemInfo(itemID)
-            if not name then Item:CreateFromItemID(itemID):ContinueOnItemLoad(Refresh) end
+            if not name and not requested[itemID] then
+                requested[itemID] = true
+                Item:CreateFromItemID(itemID):ContinueOnItemLoad(Refresh)
+            end
             entries[#entries + 1] = { itemID = itemID, amount = amount, name = name or "" }
         end
         table.sort(entries, function(a, b) return a.name < b.name end)
@@ -772,11 +811,13 @@ frame:SetScript("OnEvent", function(_, event, arg1)
         merchantOpen = false
         frame:UnregisterEvent("BAG_UPDATE_DELAYED")
         wipe(known)
+        wipe(unknown)
         searchBox:SetText("")
         UpdateButtons()
     elseif event == "BAG_UPDATE_DELAYED" then
         restockPendingVisit = nil
+        wipe(unknown) -- a recipe learnt since has left the bags
         UpdateOverlays()
-        UpdateButtons()
+        RequestButtons()
     end
 end)
